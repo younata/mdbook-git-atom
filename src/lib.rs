@@ -1,3 +1,5 @@
+extern crate html_escape;
+
 use git2::{Repository, Time, BlameOptions, Commit, Blame};
 use std::path::PathBuf;
 use std::collections::HashSet;
@@ -10,6 +12,9 @@ use mdbook::preprocess::{Preprocessor, PreprocessorContext};
 use mdbook::BookItem;
 use std::fs;
 use regex::Regex;
+use std::fs::File;
+use std::io::{BufReader, Read, BufRead};
+use pulldown_cmark::{Parser, Options, html};
 
 pub struct AtomProcessor;
 
@@ -30,6 +35,7 @@ pub struct Post {
     authors: HashSet<Author>,
     title: String,
     id: String,
+    content: String,
 }
 
 struct AtomConfig {
@@ -39,6 +45,8 @@ struct AtomConfig {
     root_path: PathBuf,
     // Create enough posts to cover the recent number of commits. Defaults to 10.
     minimum_number_of_commits: i64,
+    // Max number of lines in the article to include. 0 means no preview, -1 means whole article. Defaults to 0.
+    maximum_number_of_lines: i64,
 }
 
 impl AtomConfig {
@@ -55,13 +63,21 @@ impl AtomConfig {
         if let Some(toml::Value::Integer(min_commits)) = section_config.get("minimum_number_of_commits") {
             minimum_number_of_commits = min_commits;
         }
+        let mut article_lines: &i64 = &0;
+        if let Some(toml::Value::Integer(max_lines)) = section_config.get("article_preview_lines") {
+            if (*max_lines) < -1 {
+                panic!("Invalid number of article preview lines specified: {}", max_lines);
+            }
+            article_lines = max_lines;
+        }
 
         Some(AtomConfig {
             title: ctx.config.book.title.as_ref()?.to_string(),
             base_url: Url::parse(base_url_str).ok()?,
             content_path: ctx.config.book.src.to_path_buf(),
             root_path: ctx.root.to_path_buf(),
-            minimum_number_of_commits: *minimum_number_of_commits
+            minimum_number_of_commits: *minimum_number_of_commits,
+            maximum_number_of_lines: *article_lines,
         })
     }
 }
@@ -81,7 +97,7 @@ impl Preprocessor for AtomProcessor {
             .filter_map({ |item|
                 if let BookItem::Chapter(chapter) = item {
                     let path = config.content_path.join(chapter.source_path.as_ref()?.as_path());
-                    generator.post(path, chapter.name.to_string(), chapter.path.as_ref()?.to_path_buf())
+                    generator.post(path, chapter.name.to_string(), chapter.path.as_ref()?.to_path_buf(), config.maximum_number_of_lines)
                 } else {
                     None
                 }
@@ -131,9 +147,15 @@ impl AtomGenerator {
 
         let entries: Vec<atom_syndication::Entry> = posts
             .iter()
-            .filter(|post| post.last_modified_date <= oldest_date)
+            .filter(|post| post.last_modified_date >= oldest_date)
             .filter_map(|p| p.to_atom_entry(&base_url))
             .collect();
+
+        eprintln!("created {} entries", entries.len());
+
+        if posts.is_empty() {
+            panic!("No posts? How?");
+        }
 
         atom_syndication::Feed {
             title: atom_syndication::Text {
@@ -143,7 +165,12 @@ impl AtomGenerator {
                 r#type: Default::default()
             },
             id: "".to_string(),
-            updated: fixed_date_time_from_timestamp(&posts.get(0).expect("No posts to get a last updated at from").last_modified_date),
+            updated: fixed_date_time_from_timestamp(
+                &posts
+                    .get(0)
+                    .expect("No posts to get a last updated at from")
+                    .last_modified_date
+            ),
             authors: vec![],
             categories: vec![],
             contributors: vec![],
@@ -159,7 +186,7 @@ impl AtomGenerator {
         }
     }
 
-    fn post(&self, path: PathBuf, title: String, content_path: PathBuf) -> Option<Post> {
+    fn post(&self, path: PathBuf, title: String, content_path: PathBuf, number_of_lines: i64) -> Option<Post> {
         // Prepare our blame options
         let mut opts = BlameOptions::new();
         opts.track_copies_same_commit_moves(true)
@@ -192,13 +219,36 @@ impl AtomGenerator {
 
         let id = &content_path.to_str().unwrap_or("").to_string();
 
+        let mut markdown_content: String = String::new();
+        let file = File::open(&path).expect("Unable to open file");
+        let mut buf_reader = BufReader::new(file);
+        if number_of_lines == -1 {
+            buf_reader.read_to_string(&mut markdown_content).expect("Wasn't able to read text");
+        } else if number_of_lines > 0 {
+            markdown_content = buf_reader
+                .lines()
+                .take(number_of_lines as usize)
+                .flat_map(|s| s.ok())
+                .collect::<Vec<String>>()
+                .join("\n")
+                .to_string();
+        }
+
+        let mut options = Options::empty();
+        options.insert(Options::ENABLE_STRIKETHROUGH);
+        let parser = Parser::new_ext(markdown_content.as_str(), options);
+
+        let mut content = String::new();
+        html::push_html(&mut content, parser);
+
         Some(Post {
             path: content_path,
             last_modified_date: last_modified,
             created_date: created_at,
             authors,
             title,
-            id: id.to_string()
+            id: id.to_string(),
+            content,
         })
     }
 }
@@ -272,8 +322,8 @@ impl Post {
             content: Some(atom_syndication::Content {
                 base: None,
                 lang: None,
-                value: None,
-                src: self.source_url(base_url),
+                value: Some(html_escape::encode_text(&self.content).to_string()),
+                src: None,
                 content_type: Some("html".to_string())
             }),
             extensions: Default::default()
