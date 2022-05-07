@@ -43,10 +43,16 @@ struct AtomConfig {
     base_url: Url,
     content_path: PathBuf,
     root_path: PathBuf,
-    // Create enough posts to cover the recent number of commits. Defaults to 10.
+    // Create enough posts to cover the recent number of commits. Defaults to -1.
+    // Deprecated. Please use target_number_of_entries, as that should be consistent regardless of how often you modify a single article.
     minimum_number_of_commits: i64,
     // Max number of lines in the article to include. 0 means no preview, -1 means whole article. Defaults to 0.
     maximum_number_of_lines: i64,
+    // Target number of entries in the atom feed to create. Defaults to 10.
+    // Set this to 0 to get the old behavior where minimum_number_of_commits is paid attention to.
+    // This basically overrides minimum_number_of_commits when it's a positive number.
+    // We'll search as far back as necessary to create the target amount of entries.
+    target_number_of_entries: i64,
 }
 
 impl AtomConfig {
@@ -59,16 +65,23 @@ impl AtomConfig {
         } else {
             return None
         }
-        let mut minimum_number_of_commits: &i64 = &10;
+        let mut minimum_number_of_commits: &i64 = &-1;
         if let Some(toml::Value::Integer(min_commits)) = section_config.get("minimum_number_of_commits") {
             minimum_number_of_commits = min_commits;
         }
         let mut article_lines: &i64 = &0;
         if let Some(toml::Value::Integer(max_lines)) = section_config.get("article_preview_lines") {
             if (*max_lines) < -1 {
-                panic!("Invalid number of article preview lines specified: {}", max_lines);
+                panic!("Invalid number of article preview lines specified: {}. Expected 0 or a positive number.", max_lines);
             }
             article_lines = max_lines;
+        }
+        let mut target_number_of_entries: &i64 = &10;
+        if let Some(toml::Value::Integer(target_entries)) = section_config.get("target_number_of_entries") {
+            if (*target_entries) < -1 {
+                panic!("Invalid target number of entries provided: {}. Expected 0 or a positive number.", target_entries);
+            }
+            target_number_of_entries = target_entries;
         }
 
         Some(AtomConfig {
@@ -78,6 +91,7 @@ impl AtomConfig {
             root_path: ctx.root.to_path_buf(),
             minimum_number_of_commits: *minimum_number_of_commits,
             maximum_number_of_lines: *article_lines,
+            target_number_of_entries: *target_number_of_entries,
         })
     }
 }
@@ -104,7 +118,7 @@ impl Preprocessor for AtomProcessor {
             })
             .collect();
 
-        let feed = generator.generate(posts, config.title, config.base_url, config.minimum_number_of_commits);
+        let feed = generator.generate(posts, config.title, config.base_url, config.minimum_number_of_commits, config.target_number_of_entries);
 
         let feed_path: PathBuf = config.content_path.join("atom.xml");
         fs::write(feed_path, feed.to_string()).expect("Write atom.xml");
@@ -127,7 +141,7 @@ impl AtomGenerator {
         AtomGenerator { repo }
     }
 
-    fn generate(&self, mut posts: Vec<Post>, title: String, base_url: Url, min_commits: i64) -> atom_syndication::Feed {
+    fn generate(&self, mut posts: Vec<Post>, title: String, base_url: Url, min_commits: i64, target_entries: i64) -> atom_syndication::Feed {
         // self.repo.log
         posts.sort_by( |a, b| a.last_modified_date.cmp(&b.last_modified_date).reverse());
 
@@ -135,21 +149,39 @@ impl AtomGenerator {
         let mut revwalk = self.repo.revwalk().expect("Unable to create revwalk");
         revwalk.set_sorting(git2::Sort::TIME).expect("Unable to sort the revwalk");
         revwalk.push_head().expect("Unable to push head to the revwalk");
-        let commit: Commit = revwalk
+        let commit: Commit;
+        let walk = revwalk
             .filter_map(|id| {
                 let id = id.ok()?;
                 let commit = self.repo.find_commit(id).ok()?;
                 Some(commit)
-            })
-            .take(min_commits as usize)
-            .last().expect("No commits to take from");
+            }).into_iter();
+        if target_entries == 0 {
+            commit = walk
+                .take(min_commits as usize)
+                .last().expect("No commits to take from");
+        } else {
+            commit = walk
+                .last().expect("No commits to take from");
+        }
         let oldest_date = commit.time();
 
-        let entries: Vec<atom_syndication::Entry> = posts
+        let entries_ish = posts
             .iter()
-            .filter(|post| post.last_modified_date >= oldest_date)
-            .filter_map(|p| p.to_atom_entry(&base_url))
-            .collect();
+            .filter(|post| post.last_modified_date >= oldest_date);
+
+        let entries: Vec<atom_syndication::Entry>;
+
+        if target_entries > 0 {
+            entries = entries_ish
+                .take(target_entries as usize)
+                .filter_map(|p| p.to_atom_entry(&base_url))
+                .collect();
+        } else {
+            entries = entries_ish
+                .filter_map(|p| p.to_atom_entry(&base_url))
+                .collect();
+        }
 
         eprintln!("created {} entries", entries.len());
 
