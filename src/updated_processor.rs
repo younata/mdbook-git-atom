@@ -109,6 +109,6 @@ impl Post {
         let last_modified_naivedatetime = chrono::NaiveDateTime::from_timestamp(self.last_modified_date.seconds(), 0);
 
         let last_modified_datetime = chrono::DateTime::<FixedOffset>::from_utc(last_modified_naivedatetime, chrono::FixedOffset::east(0));
-        format!("- [{}]({}) ({})", self.title, self.path.to_str().expect("Actual path"), last_modified_datetime.format("%Y-%m-%d"))
+        format!("- [{}](/{}) ({})", self.title, self.path.to_str().expect("Actual path"), last_modified_datetime.format("%Y-%m-%d"))
     }
 }
