@@ -158,13 +158,26 @@ impl PostFinder {
 }
 
 impl Post {
-    pub fn source_url(&self, base_url: &Url) -> Option<String> {
-        let url_string = base_url.join(self.path.to_str()?)
-            .ok()?
-            .to_string();
+    pub fn source_url(&self, base_url: Option<&Url>) -> Option<String> {
+        let url_string: String;
+        if let Some(base_url) = base_url {
+            url_string = base_url.join(self.path.to_str()?)
+                .ok()?
+                .to_string();
+        } else {
+            url_string = self.path.to_str().unwrap().to_string()
+        }
 
-        let re = Regex::new(r"md$").unwrap();
-
-        Some(re.replace_all(url_string.as_str(), "html").to_string())
+        Some(url_by_replacing_md_suffix(url_by_replacing_readme_md(url_string)))
     }
+}
+
+fn url_by_replacing_md_suffix(url_string: String) -> String {
+    let re = Regex::new(r"md$").unwrap();
+    re.replace_all(url_string.as_str(), "html").to_string()
+}
+
+fn url_by_replacing_readme_md(url_string: String) -> String {
+    let re = Regex::new(r"README.md$").unwrap();
+    re.replace_all(url_string.as_str(), "index.html").to_string()
 }

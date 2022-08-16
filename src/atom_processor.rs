@@ -156,7 +156,7 @@ impl Post {
     }
 
     fn link(&self, base_url: &Url) -> Option<atom_syndication::Link> {
-        if let Some(url_string) = self.source_url(base_url) {
+        if let Some(url_string) = self.source_url(Some(base_url)) {
             Some(Link {
                 href: url_string,
                 rel: "self".to_string(),
