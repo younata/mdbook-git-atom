@@ -102,8 +102,8 @@ impl PostFinder {
         }
 
         let mut authors = HashSet::new();
-        let last_modified = blame.get_index(0).expect("No blame at index 0").final_signature().when();
-        let created_at = blame.get_index(blame.len() - 1).expect("no blame at last index").final_signature().when();
+        let last_modified = blame.get_index(blame.len() - 1).expect("No blame at index 0").final_signature().when();
+        let created_at = blame.get_index(0).expect("no blame at last index").final_signature().when();
 
         for hunk in blame.iter() {
             let signature = hunk.final_signature();
